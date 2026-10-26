@@ -1,3 +1,4 @@
+```yaml
 name: Build iOS IPA
 
 on:
@@ -35,41 +36,44 @@ jobs:
           pod install
 
       - name: Find Xcode workspace
+        id: workspace
         run: |
-          find ios -maxdepth 2 -name "*.xcworkspace"
-
-      - name: List Xcode schemes
-        run: |
-          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" | head -n 1)
+          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" \
+            -not -path "*/Pods/*" | head -n 1)
 
           if [ -z "$WORKSPACE" ]; then
             echo "Erreur : workspace Xcode introuvable."
             exit 1
           fi
 
-          echo "Workspace trouve : $WORKSPACE"
-          xcodebuild -list -workspace "$WORKSPACE"
+          echo "Workspace trouvé : $WORKSPACE"
+          echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
+
+      - name: List Xcode schemes
+        run: |
+          xcodebuild -list -workspace "${{ steps.workspace.outputs.path }}"
 
       - name: Build iOS app without signing
         run: |
           set -e
 
-          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" | head -n 1)
+          WORKSPACE="${{ steps.workspace.outputs.path }}"
 
-          if [ -z "$WORKSPACE" ]; then
-            echo "Erreur : workspace Xcode introuvable."
-            exit 1
-          fi
-
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | sed -n '/Schemes:/,$p' | tail -n +2 | sed '/^[[:space:]]*$/d' | head -n 1 | xargs)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
+            | sed -n '/Schemes:/,$p' \
+            | tail -n +2 \
+            | sed '/^[[:space:]]*$/d' \
+            | head -n 1 \
+            | xargs)
 
           if [ -z "$SCHEME" ]; then
-            echo "Erreur : aucun schema Xcode trouve."
+            echo "Erreur : aucun schéma Xcode trouvé."
             xcodebuild -list -workspace "$WORKSPACE"
             exit 1
           fi
 
-          echo "Schema utilise : $SCHEME"
+          echo "Schéma utilisé : $SCHEME"
+          echo "PRODUCT_SCHEME=$SCHEME" >> "$GITHUB_ENV"
 
           xcodebuild \
             -workspace "$WORKSPACE" \
@@ -85,13 +89,25 @@ jobs:
         run: |
           set -e
 
-          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" -type d | head -n 1)
+          PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products"
+
+          echo "Recherche des applications compilées..."
+          find "$PRODUCTS" -type d -name "*.app" -print
+
+          APP_PATH=$(find "$PRODUCTS" \
+            -type d \
+            -name "*.app" \
+            -path "*/Release-iphoneos/*" \
+            -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "Erreur : application compilee introuvable."
-            find "$RUNNER_TEMP/DerivedData/Build/Products" -name "*.app"
+            echo "Erreur : application iOS introuvable."
+            echo "Contenu du dossier de compilation :"
+            find "$PRODUCTS" -maxdepth 5 -print
             exit 1
           fi
+
+          echo "Application trouvée : $APP_PATH"
 
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
@@ -99,10 +115,5 @@ jobs:
           cd "$RUNNER_TEMP/ipa"
           zip -r "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
 
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: GoalApp-IPA-Unsigned
-          path: ${{ runner.temp }}/GoalApp-unsigned.ipa
-          if-no-files-found: error
-          retention-days: 14
+          test -f "$RUNNER_TEMP/GoalApp-unsigned.ipa"
+          echo "IPA créé
