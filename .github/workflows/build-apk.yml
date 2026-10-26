@@ -1,3 +1,4 @@
+```yaml
 name: Build Android APK
 
 on:
@@ -11,15 +12,15 @@ permissions:
 
 jobs:
   build:
-    name: Compile APK
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Configure Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -29,10 +30,10 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android
 
-      - name: Configure Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build APK
+      - name: Build release APK
         run: |
           cd android
           chmod +x gradlew
@@ -41,7 +42,8 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: GoalApp-Android-APK
+          name: GoalApp-APK
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
+```
