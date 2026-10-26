@@ -1,5 +1,5 @@
-
-name: Build iOS IPA
+```yaml
+name: Build iOS Runner.app
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build IPA
+    name: Build Runner.app
     runs-on: macos-15
 
     steps:
@@ -35,29 +35,26 @@ jobs:
           cd ios
           pod install
 
-      - name: Find Xcode workspace
-        id: workspace
-        run: |
-          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" \
-            -not -path "*/Pods/*" | head -n 1)
-
-          if [ -z "$WORKSPACE" ]; then
-            echo "Erreur : workspace Xcode introuvable."
-            exit 1
-          fi
-
-          echo "Workspace trouvé : $WORKSPACE"
-          echo "path=$WORKSPACE" >> "$GITHUB_OUTPUT"
-
-      - name: List Xcode schemes
-        run: |
-          xcodebuild -list -workspace "${{ steps.workspace.outputs.path }}"
-
-      - name: Build iOS app without signing
+      - name: Find workspace and scheme
+        id: xcode
+        shell: bash
         run: |
           set -e
 
-          WORKSPACE="${{ steps.workspace.outputs.path }}"
+          WORKSPACE=$(find ios -maxdepth 3 \
+            -name "*.xcworkspace" \
+            -not -path "*/Pods/*" \
+            -print -quit)
+
+          if [ -z "$WORKSPACE" ]; then
+            echo "Erreur : aucun workspace Xcode trouvé."
+            find ios -maxdepth 3 -print
+            exit 1
+          fi
+
+          echo "Workspace : $WORKSPACE"
+
+          xcodebuild -list -workspace "$WORKSPACE"
 
           SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
             | sed -n '/Schemes:/,$p' \
@@ -68,16 +65,21 @@ jobs:
 
           if [ -z "$SCHEME" ]; then
             echo "Erreur : aucun schéma Xcode trouvé."
-            xcodebuild -list -workspace "$WORKSPACE"
             exit 1
           fi
 
-          echo "Schéma utilisé : $SCHEME"
-          echo "PRODUCT_SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          echo "Schéma : $SCHEME"
+          echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
+          echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
+
+      - name: Build iOS application
+        shell: bash
+        run: |
+          set -e
 
           xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
+            -workspace "${{ steps.xcode.outputs.workspace }}" \
+            -scheme "${{ steps.xcode.outputs.scheme }}" \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -85,35 +87,65 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Package unsigned IPA
+      - name: Find and create Runner.app
+        shell: bash
         run: |
           set -e
 
-          PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products"
+          DERIVED="$RUNNER_TEMP/DerivedData"
 
           echo "Recherche des applications compilées..."
-          find "$PRODUCTS" -type d -name "*.app" -print
 
-          APP_PATH=$(find "$PRODUCTS" \
+          find "$DERIVED" -type d -name "*.app" \
+            -not -path "*/Index.noindex/*" \
+            -print
+
+          APP_PATH=$(find "$DERIVED/Build/Products" \
             -type d \
             -name "*.app" \
             -path "*/Release-iphoneos/*" \
+            -not -path "*/Index.noindex/*" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "Erreur : application iOS introuvable."
-            echo "Contenu du dossier de compilation :"
-            find "$PRODUCTS" -maxdepth 5 -print
+            APP_PATH=$(find "$DERIVED" \
+              -type d \
+              -name "*.app" \
+              -not -path "*/Index.noindex/*" \
+              -not -path "*/Build/Intermediates.noindex/*" \
+              -print -quit)
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERREUR : aucune application .app trouvée après compilation."
+            echo "Fichiers générés par Xcode :"
+            find "$DERIVED/Build/Products" -maxdepth 5 -print
             exit 1
           fi
 
           echo "Application trouvée : $APP_PATH"
 
-          mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
+          ditto "$APP_PATH" "$RUNNER_TEMP/Runner.app"
 
-          cd "$RUNNER_TEMP/ipa"
-          zip -r "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
+          if [ ! -d "$RUNNER_TEMP/Runner.app" ]; then
+            echo "Erreur : Runner.app n'a pas été créé."
+            exit 1
+          fi
 
-          test -f "$RUNNER_TEMP/GoalApp-unsigned.ipa"
-          echo "IPA créé
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$RUNNER_TEMP/Runner.app" \
+            "$RUNNER_TEMP/Runner.app.zip"
+
+          echo "Runner.app et son archive ZIP ont été créés."
+          ls -lh "$RUNNER_TEMP/Runner.app.zip"
+
+      - name: Upload Runner.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Runner-app-iOS
+          path: |
+            ${{ runner.temp }}/Runner.app
+            ${{ runner.temp }}/Runner.app.zip
+          if-no-files-found: error
+          retention-days: 14
+```
