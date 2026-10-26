@@ -1,4 +1,4 @@
-name: Build iOS Runner.app
+name: Build GoalApp IPA
 
 on:
   workflow_dispatch:
@@ -10,16 +10,16 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build Runner.app
+  build-ios:
+    name: Build iOS IPA
     runs-on: macos-15
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -38,7 +38,7 @@ jobs:
         id: xcode
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           WORKSPACE=$(find ios -maxdepth 3 \
             -name "*.xcworkspace" \
@@ -46,35 +46,58 @@ jobs:
             -print -quit)
 
           if [ -z "$WORKSPACE" ]; then
-            echo "Erreur : aucun workspace Xcode trouvé."
+            echo "::error::Workspace Xcode introuvable."
             find ios -maxdepth 3 -print
             exit 1
           fi
 
           echo "Workspace : $WORKSPACE"
 
-          xcodebuild -list -workspace "$WORKSPACE"
+          xcodebuild -list -json -workspace "$WORKSPACE" \
+            > "$RUNNER_TEMP/xcode-list.json"
 
-          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null \
-            | sed -n '/Schemes:/,$p' \
-            | tail -n +2 \
-            | sed '/^[[:space:]]*$/d' \
-            | head -n 1 \
-            | xargs)
+          cat "$RUNNER_TEMP/xcode-list.json"
+
+          SCHEME=$(python3 - "$RUNNER_TEMP/xcode-list.json" "$WORKSPACE" <<'PY'
+          import json
+          import os
+          import sys
+
+          data = json.load(open(sys.argv[1]))
+          workspace = os.path.splitext(os.path.basename(sys.argv[2]))[0]
+          schemes = []
+
+          for value in data.values():
+              if isinstance(value, dict) and isinstance(value.get("schemes"), list):
+                  schemes.extend(value["schemes"])
+
+          schemes = list(dict.fromkeys(schemes))
+          usable = [
+              s for s in schemes
+              if "pods" not in s.lower()
+              and "tests" not in s.lower()
+          ]
+
+          print(next(
+              (s for s in usable if s.lower() == workspace.lower()),
+              usable[0] if usable else ""
+          ))
+          PY
+          )
 
           if [ -z "$SCHEME" ]; then
-            echo "Erreur : aucun schéma Xcode trouvé."
+            echo "::error::Aucun schéma d'application trouvé."
             exit 1
           fi
 
-          echo "Schéma : $SCHEME"
+          echo "Schéma choisi : $SCHEME"
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
 
       - name: Build iOS application
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           xcodebuild \
             -workspace "${{ steps.xcode.outputs.workspace }}" \
@@ -84,66 +107,50 @@ jobs:
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_IDENTITY="" \
             build
 
-      - name: Find and create Runner.app
+      - name: Package unsigned IPA
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          DERIVED="$RUNNER_TEMP/DerivedData"
+          PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products"
 
-          echo "Recherche des applications compilées..."
+          echo "Recherche de l'application compilée..."
+          find "$PRODUCTS" -type d -name "*.app" -print
 
-          find "$DERIVED" -type d -name "*.app" \
-            -not -path "*/Index.noindex/*" \
-            -print
-
-          APP_PATH=$(find "$DERIVED/Build/Products" \
+          APP_PATH=$(find "$PRODUCTS/Release-iphoneos" \
+            -maxdepth 1 \
             -type d \
             -name "*.app" \
-            -path "*/Release-iphoneos/*" \
-            -not -path "*/Index.noindex/*" \
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            APP_PATH=$(find "$DERIVED" \
-              -type d \
-              -name "*.app" \
-              -not -path "*/Index.noindex/*" \
-              -not -path "*/Build/Intermediates.noindex/*" \
-              -print -quit)
-          fi
-
-          if [ -z "$APP_PATH" ]; then
-            echo "ERREUR : aucune application .app trouvée après compilation."
-            echo "Fichiers générés par Xcode :"
-            find "$DERIVED/Build/Products" -maxdepth 5 -print
+            echo "::error::Xcode n'a produit aucune application .app."
+            echo "Contenu des produits compilés :"
+            find "$PRODUCTS" -maxdepth 5 -print
             exit 1
           fi
 
           echo "Application trouvée : $APP_PATH"
 
-          ditto "$APP_PATH" "$RUNNER_TEMP/Runner.app"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
 
-          if [ ! -d "$RUNNER_TEMP/Runner.app" ]; then
-            echo "Erreur : Runner.app n'a pas été créé."
-            exit 1
-          fi
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -r "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
 
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$RUNNER_TEMP/Runner.app" \
-            "$RUNNER_TEMP/Runner.app.zip"
+          /usr/bin/unzip -t "$RUNNER_TEMP/GoalApp-unsigned.ipa"
+          test -s "$RUNNER_TEMP/GoalApp-unsigned.ipa"
 
-          echo "Runner.app et son archive ZIP ont été créés."
-          ls -lh "$RUNNER_TEMP/Runner.app.zip"
+          echo "IPA créé et vérifié."
 
-      - name: Upload Runner.app
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Runner-app-iOS
-          path: |
-            ${{ runner.temp }}/Runner.app
-            ${{ runner.temp }}/Runner.app.zip
+          name: GoalApp-IPA-Unsigned
+          path: ${{ runner.temp }}/GoalApp-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
