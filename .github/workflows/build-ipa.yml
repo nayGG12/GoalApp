@@ -1,4 +1,4 @@
-name: Build iOS IPA (Unsigned)
+name: Build iOS IPA
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build unsigned IPA
+    name: Build IPA
     runs-on: macos-15
 
     steps:
@@ -34,13 +34,46 @@ jobs:
           cd ios
           pod install
 
+      - name: Find Xcode workspace
+        run: |
+          find ios -maxdepth 2 -name "*.xcworkspace"
+
+      - name: List Xcode schemes
+        run: |
+          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" | head -n 1)
+
+          if [ -z "$WORKSPACE" ]; then
+            echo "Erreur : workspace Xcode introuvable."
+            exit 1
+          fi
+
+          echo "Workspace trouve : $WORKSPACE"
+          xcodebuild -list -workspace "$WORKSPACE"
+
       - name: Build iOS app without signing
         run: |
           set -e
 
+          WORKSPACE=$(find ios -maxdepth 2 -name "*.xcworkspace" | head -n 1)
+
+          if [ -z "$WORKSPACE" ]; then
+            echo "Erreur : workspace Xcode introuvable."
+            exit 1
+          fi
+
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" 2>/dev/null | sed -n '/Schemes:/,$p' | tail -n +2 | sed '/^[[:space:]]*$/d' | head -n 1 | xargs)
+
+          if [ -z "$SCHEME" ]; then
+            echo "Erreur : aucun schema Xcode trouve."
+            xcodebuild -list -workspace "$WORKSPACE"
+            exit 1
+          fi
+
+          echo "Schema utilise : $SCHEME"
+
           xcodebuild \
-            -workspace ios/GoalApp.xcworkspace \
-            -scheme GoalApp \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -52,16 +85,16 @@ jobs:
         run: |
           set -e
 
-          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/GoalApp.app"
+          APP_PATH=$(find "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" -type d | head -n 1)
 
-          if [ ! -d "$APP_PATH" ]; then
-            echo "Erreur : application compilée introuvable : $APP_PATH"
-            find "$RUNNER_TEMP/DerivedData/Build/Products" -maxdepth 3 -name "*.app"
+          if [ -z "$APP_PATH" ]; then
+            echo "Erreur : application compilee introuvable."
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -name "*.app"
             exit 1
           fi
 
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/GoalApp.app"
+          cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
 
           cd "$RUNNER_TEMP/ipa"
           zip -r "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
