@@ -1,22 +1,17 @@
+```yaml
 name: Build iOS IPA
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - "src/**"
-      - "app/**"
-      - "assets/**"
-      - "app.json"
-      - "package.json"
-      - "package-lock.json"
-      - "eas.json"
-      - ".github/workflows/build-ipa.yml"
+    branches:
+      - main
 
 jobs:
   build-ipa:
+    name: Build iOS IPA
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,7 +28,18 @@ jobs:
       - name: Install EAS CLI
         run: npm install --global eas-cli
 
+      - name: Check Expo authentication
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::Le secret EXPO_TOKEN est absent ou inaccessible."
+            exit 1
+          fi
+          echo "Le secret EXPO_TOKEN est présent."
+
       - name: Build IPA
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas build --platform ios --profile preview --non-interactive
+```
