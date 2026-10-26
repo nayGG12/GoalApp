@@ -6,38 +6,42 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
-  build-apk:
-    name: Build Android APK
+  build:
+    name: Compile APK
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Configure Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Install EAS CLI
-        run: npm install --global eas-cli
+      - name: Generate Android project
+        run: npx expo prebuild --platform android
 
-      - name: Check Expo authentication
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: |
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "::error::Le secret EXPO_TOKEN est absent ou inaccessible."
-            exit 1
-          fi
-          echo "Le secret EXPO_TOKEN est présent."
+      - name: Configure Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Build APK
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        run: eas build --platform android --profile preview --non-interactive
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoalApp-Android-APK
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14
