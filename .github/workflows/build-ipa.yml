@@ -1,4 +1,4 @@
-name: Build GoalApp IPA
+name: Build iOS IPA
 
 on:
   workflow_dispatch:
@@ -9,30 +9,48 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-ios:
-    name: Build iOS IPA
+    name: Build iOS IPA (non signé)
     runs-on: macos-15
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 22
+
+      # Expo SDK récent => il faut un Xcode récent (Xcode 26+).
+      # On prend le plus récent disponible sur le runner.
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          node -v
+          npm -v
+          pod --version
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
       - name: Generate iOS project
-        run: npx expo prebuild --platform ios
+        run: npx expo prebuild --platform ios --no-install
 
       - name: Install CocoaPods
-        run: |
-          cd ios
-          pod install
+        working-directory: ios
+        run: pod install
 
       - name: Find workspace and scheme
         id: xcode
@@ -40,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          WORKSPACE=$(find ios -maxdepth 3 \
+          WORKSPACE=$(find ios -maxdepth 2 \
             -name "*.xcworkspace" \
             -not -path "*/Pods/*" \
             -print -quit)
@@ -55,8 +73,6 @@ jobs:
 
           xcodebuild -list -json -workspace "$WORKSPACE" \
             > "$RUNNER_TEMP/xcode-list.json"
-
-          cat "$RUNNER_TEMP/xcode-list.json"
 
           SCHEME=$(python3 - "$RUNNER_TEMP/xcode-list.json" "$WORKSPACE" <<'PY'
           import json
@@ -87,6 +103,7 @@ jobs:
 
           if [ -z "$SCHEME" ]; then
             echo "::error::Aucun schéma d'application trouvé."
+            cat "$RUNNER_TEMP/xcode-list.json"
             exit 1
           fi
 
@@ -94,10 +111,11 @@ jobs:
           echo "workspace=$WORKSPACE" >> "$GITHUB_OUTPUT"
           echo "scheme=$SCHEME" >> "$GITHUB_OUTPUT"
 
-      - name: Build iOS application
+      - name: Build iOS application (Release, sans signature)
         shell: bash
         run: |
           set -euo pipefail
+          set -o pipefail
 
           xcodebuild \
             -workspace "${{ steps.xcode.outputs.workspace }}" \
@@ -108,8 +126,10 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_IDENTITY="" \
-            build
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
 
       - name: Package unsigned IPA
         shell: bash
@@ -118,9 +138,6 @@ jobs:
 
           PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products"
 
-          echo "Recherche de l'application compilée..."
-          find "$PRODUCTS" -type d -name "*.app" -print
-
           APP_PATH=$(find "$PRODUCTS/Release-iphoneos" \
             -maxdepth 1 \
             -type d \
@@ -128,9 +145,8 @@ jobs:
             -print -quit)
 
           if [ -z "$APP_PATH" ]; then
-            echo "::error::Xcode n'a produit aucune application .app."
-            echo "Contenu des produits compilés :"
-            find "$PRODUCTS" -maxdepth 5 -print
+            echo "::error::Aucune application .app produite."
+            find "$PRODUCTS" -maxdepth 4 -print
             exit 1
           fi
 
@@ -140,12 +156,10 @@ jobs:
           cp -R "$APP_PATH" "$RUNNER_TEMP/ipa/Payload/"
 
           cd "$RUNNER_TEMP/ipa"
-          /usr/bin/zip -r "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
+          /usr/bin/zip -qry "$RUNNER_TEMP/GoalApp-unsigned.ipa" Payload
 
-          /usr/bin/unzip -t "$RUNNER_TEMP/GoalApp-unsigned.ipa"
-          test -s "$RUNNER_TEMP/GoalApp-unsigned.ipa"
-
-          echo "IPA créé et vérifié."
+          /usr/bin/unzip -tq "$RUNNER_TEMP/GoalApp-unsigned.ipa"
+          ls -lh "$RUNNER_TEMP/GoalApp-unsigned.ipa"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
@@ -154,3 +168,12 @@ jobs:
           path: ${{ runner.temp }}/GoalApp-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build log (en cas d'échec)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
